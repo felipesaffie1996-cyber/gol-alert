@@ -4,16 +4,18 @@ Descripción: Monitorea partidos en vivo en 19 ligas y envía alertas
              por Telegram cuando hay alta probabilidad de gol tardío.
 
 SISTEMA DE PUNTOS:
-  Criterio 1 — Deuda de jornada (últimos 2-3 partidos sin gol en 89+): 2 pts
+  Criterio 1 — Deuda de jornada (últimos 1-3 partidos sin gol en 89+): 2 pts
   Criterio 2 — Momentum (gol entre min 80-88):                         1 pt
   Criterio 3 — Over frustrado (top vs colista, 0-0 al 85+):            1 pt
   Criterio 4 — Partido parejo con gol entre min 60-80:                 1 pt
   Criterio 5 — Local perdiendo al min 80+:                             1 pt
+  Criterio 6 — Dominio estadístico (tiros 6+ y posesión 60%+ o córners 6+): 1 pt
+  Criterio 7 — Jornada simultánea (2+ partidos a la misma hora):       1 pt
 
 NIVELES DE ALERTA (mínimo 2 puntos para alertar):
-  2 pts → ALERT
-  3 pts → MÁXIMA
-  4+ pts → TOTAL
+  2 pts → 🟠 ALERT
+  3 pts → 🔴 MÁXIMA
+  4+ pts → 🚨 TOTAL
 """
 
 import requests
@@ -127,6 +129,21 @@ def obtener_eventos_partido(fixture_id):
     return api_get("fixtures/events", {"fixture": fixture_id})
 
 
+def obtener_estadisticas_partido(fixture_id):
+    """Obtiene estadísticas en vivo de un partido (posesión, tiros, córners).
+    La API devuelve siempre [local, visita] en ese orden."""
+    response = api_get("fixtures/statistics", {"fixture": fixture_id})
+    stats = {}
+    lados = ["home", "away"]
+    for i, equipo in enumerate(response[:2]):
+        lado = lados[i]
+        datos = {}
+        for stat in equipo.get("statistics", []):
+            datos[stat["type"]] = stat["value"]
+        stats[lado] = datos
+    return stats
+
+
 def obtener_posiciones(liga_id):
     response = api_get("standings", {"league": liga_id, "season": SEASON})
     posiciones = {}
@@ -200,7 +217,7 @@ def contar_goles_entre(fixture_id, min_inicio, min_fin):
     return count
 
 
-def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_local, pos_visita, datos_jornada):
+def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_local, pos_visita, datos_jornada, partidos_simultaneos=1):
     promedio   = PROMEDIO_GOLES_TARDIOS.get(LIGAS.get(liga_id, ""), PROMEDIO_GOLES_TARDIOS["DEFAULT"])
     goles_89   = datos_jornada["goles_89"]
     terminados = datos_jornada["terminados"]
@@ -239,10 +256,43 @@ def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_
             puntos += 1
             motivos.append(f"🔄 <b>Partido parejo despertó</b>: dif. {diferencia_pos} puestos, gol entre min 60-80")
 
+    # Criterio 7 — Partidos simultáneos en la misma liga: 1 pt
+    # Cuando 2+ partidos empezaron a la misma hora, hay presión extra por resultados paralelos
+    if partidos_simultaneos >= 2:
+        puntos += 1
+        motivos.append(f"⏰ <b>Jornada simultánea</b>: {partidos_simultaneos} partidos a la misma hora — presión por resultados paralelos")
+
     # Criterio 5 — Local perdiendo: 1 pt
     if minuto >= 80 and goles_local < goles_visita:
         puntos += 1
         motivos.append(f"🏠 <b>Local perdiendo</b>: {goles_local}-{goles_visita} — presión máxima")
+
+    # Criterio 6 — Dominio estadístico: 1 pt
+    # Tiros al arco 6+ (obligatorio) + posesión 60%+ O córners 6+
+    if minuto >= 80:
+        try:
+            stats = obtener_estadisticas_partido(fixture_id)
+            home_stats = stats.get("home", {})
+
+            tiros_arco  = int(home_stats.get("Shots on Goal") or 0)
+            corners     = int(home_stats.get("Corner Kicks") or 0)
+            posesion_raw = home_stats.get("Ball Possession") or "0%"
+            posesion    = int(str(posesion_raw).replace("%", "").strip() or 0)
+
+            tiros_ok   = tiros_arco >= 6
+            posesion_ok = posesion >= 60
+            corners_ok  = corners >= 6
+
+            if tiros_ok and (posesion_ok or corners_ok):
+                puntos += 1
+                detalles = f"tiros al arco: {tiros_arco}"
+                if posesion_ok:
+                    detalles += f", posesión: {posesion}%"
+                if corners_ok:
+                    detalles += f", córners: {corners}"
+                motivos.append(f"📊 <b>Dominio estadístico</b>: {detalles}")
+        except Exception as e:
+            print(f"[STATS ERROR] {e}")
 
     if puntos < 2:
         return 0, None, []
@@ -343,6 +393,20 @@ def main():
         if hay_urgente:
             print(f"  ⚡ Partido en min {MINUTO_URGENTE}+ — intervalo reducido a {INTERVALO_URGENTE}s")
 
+        # Calcular partidos simultáneos por liga (misma hora de inicio)
+        # Agrupamos por liga_id + hora_inicio redondeada a 5 minutos
+        from collections import Counter
+        hora_por_liga = {}
+        for f in partidos_vivos:
+            lid = f["league"]["id"]
+            hora = f["fixture"].get("date", "")[:16]  # "2026-03-11T16:45"
+            hora_por_liga.setdefault(lid, []).append(hora)
+
+        simultaneos_por_liga = {}
+        for lid, horas in hora_por_liga.items():
+            conteo = Counter(horas)
+            simultaneos_por_liga[lid] = max(conteo.values())
+
         # Evaluar cada partido desde min 80
         for fixture in partidos_vivos:
             liga_id    = fixture["league"]["id"]
@@ -363,7 +427,8 @@ def main():
                 fixture_id, liga_id, minuto,
                 goles_local, goles_visita,
                 pos_local, pos_visita,
-                datos_jornada
+                datos_jornada,
+                partidos_simultaneos=simultaneos_por_liga.get(liga_id, 1)
             )
 
             if nivel is None:
