@@ -388,7 +388,7 @@ def main():
                 datos_jornada
             )
 
-            if not nivel:
+            if nivel != "MAXIMA":
                 continue
 
             # Clave única para evitar alertas repetidas
