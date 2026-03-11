@@ -104,17 +104,30 @@ cache_posiciones = {}
 # API
 # ============================================================
 def api_get(endpoint, params={}):
-    headers = {
+    # Intenta primero api-sports.io (plan PRO pagado, 7500 req/día)
+    # Si falla DNS, cae automáticamente a RapidAPI (backup)
+    headers_primary = {"x-apisports-key": API_KEY}
+    url_primary = f"https://v3.api-sports.io/{endpoint}"
+    try:
+        r = requests.get(url_primary, headers=headers_primary, params=params, timeout=10)
+        data = r.json()
+        if "response" in data:
+            return data["response"]
+    except Exception as e:
+        print(f"[API PRIMARY ERROR] {e} — intentando RapidAPI...")
+
+    # Fallback a RapidAPI
+    headers_backup = {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": "api-football-v1.p.rapidapi.com"
     }
-    url = f"https://api-football-v1.p.rapidapi.com/v3/{endpoint}"
+    url_backup = f"https://api-football-v1.p.rapidapi.com/v3/{endpoint}"
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=10)
+        r = requests.get(url_backup, headers=headers_backup, params=params, timeout=10)
         data = r.json()
         return data.get("response", [])
     except Exception as e:
-        print(f"[ERROR API] {e}")
+        print(f"[API BACKUP ERROR] {e}")
         return []
 
 
