@@ -1,16 +1,19 @@
 """
 ⚽ GOL ALERT SYSTEM — Monitor de goles en minuto 89+
-Descripción: Monitorea partidos en vivo en 19 ligas y envía alertas
+Descripción: Monitorea partidos en vivo en 21 ligas y envía alertas
              por Telegram cuando hay alta probabilidad de gol tardío.
 
 SISTEMA DE PUNTOS:
-  Criterio 1 — Deuda de jornada (últimos 1-3 partidos sin gol en 89+): 2 pts
-  Criterio 2 — Momentum (gol entre min 80-88):                         1 pt
-  Criterio 3 — Over frustrado (top vs colista, 0-0 al 85+):            1 pt
-  Criterio 4 — Partido parejo con gol entre min 60-80:                 1 pt
-  Criterio 5 — Local perdiendo al min 80+:                             1 pt
-  Criterio 6 — Dominio estadístico (tiros 6+ y posesión 60%+ o córners 6+): 1 pt
-  Criterio 7 — Jornada simultánea (2+ partidos a la misma hora):       1 pt
+  Criterio 1  — Deuda goles tardíos (últimos 1-3 partidos sin gol en 89+):  2 pts
+  Criterio 2  — Momentum (gol entre min 80-88):                             1 pt
+  Criterio 3  — Over frustrado (top vs colista, 0-0 al 85+):                1 pt
+  Criterio 4  — Partido parejo despertó (gol entre min 60-80):              1 pt
+  Criterio 5  — Local perdiendo al min 80+:                                 1 pt
+  Criterio 6  — Dominio estadístico (tiros 6+, posesión 60%+ o córners 6+): 1 pt
+  Criterio 7  — Jornada simultánea (2+ partidos a la misma hora):           1 pt
+  Criterio 8  — Deuda BTTS (< 25% partidos con ambos anotando):             2 pts
+  Criterio 9  — Marcador dominante de jornada (50%+ repiten marcador):      1 pt
+  Criterio 10 — Resistencia de goles/techo (3 toques=1pt, 4+ toques=2pts): 1-2 pts
 
 NIVELES DE ALERTA (mínimo 2 puntos para alertar):
   2 pts → 🟠 ALERT
@@ -189,17 +192,67 @@ def actualizar_jornada(liga_id, ronda):
     total      = len(partidos)
     terminados = 0
     goles_89   = 0
+    btts       = 0
 
     for p in partidos:
         if p["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
             terminados += 1
+            goles_local  = p["goals"]["home"] or 0
+            goles_visita = p["goals"]["away"] or 0
+            if goles_local >= 1 and goles_visita >= 1:
+                btts += 1
             for ev in obtener_eventos_partido(p["fixture"]["id"]):
                 if ev.get("type") == "Goal" and ev.get("detail") != "Missed Penalty":
                     min_ev = ev.get("time", {}).get("elapsed", 0) + (ev.get("time", {}).get("extra", 0) or 0)
                     if min_ev >= 89:
                         goles_89 += 1
 
-    jornadas[liga_id][ronda] = {"goles_89": goles_89, "terminados": terminados, "total": total}
+    # Criterio 9 — Marcador dominante (normalizado: siempre mayor-menor)
+    from collections import Counter
+    marcadores = []
+    for p in partidos:
+        if p["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
+            g_h = p["goals"]["home"] or 0
+            g_a = p["goals"]["away"] or 0
+            marcador_norm = (max(g_h, g_a), min(g_h, g_a))
+            marcadores.append(marcador_norm)
+    conteo_marcadores = Counter(marcadores)
+    marcador_dominante = None
+    max_repeticiones = 0
+    for marcador, count in conteo_marcadores.items():
+        if count > max_repeticiones:
+            max_repeticiones = count
+            marcador_dominante = marcador
+    # Solo es dominante si supera el 50% de partidos terminados
+    if marcador_dominante and max_repeticiones / max(terminados, 1) <= 0.5:
+        marcador_dominante = None
+        max_repeticiones = 0
+
+    # Criterio 10 — Techo de goles (resistencia)
+    techo_goles = 0
+    partidos_en_techo = 0
+    techo_roto = False
+    if terminados > 0:
+        totales = []
+        for p in partidos:
+            if p["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
+                g_h = p["goals"]["home"] or 0
+                g_a = p["goals"]["away"] or 0
+                totales.append(g_h + g_a)
+        if totales:
+            techo_goles = max(totales)
+            partidos_en_techo = sum(1 for t in totales if t == techo_goles)
+
+    jornadas[liga_id][ronda] = {
+        "goles_89":           goles_89,
+        "terminados":         terminados,
+        "total":              total,
+        "btts":               btts,
+        "marcador_dominante": marcador_dominante,
+        "rep_marcador":       max_repeticiones,
+        "techo_goles":        techo_goles,
+        "partidos_en_techo":  partidos_en_techo,
+    }
     liga_nombre = LIGAS.get(liga_id, liga_id)
     print(f"  → [{liga_nombre}] {ronda}: {terminados}/{total} terminados, {goles_89} goles en 89+")
 
@@ -293,6 +346,55 @@ def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_
                 motivos.append(f"📊 <b>Dominio estadístico</b>: {detalles}")
         except Exception as e:
             print(f"[STATS ERROR] {e}")
+
+    # Criterio 8 — Deuda BTTS: 1 pt
+    # Si BTTS reales < 25% de partidos terminados y quedan 1-3 partidos
+    btts           = datos_jornada.get("btts", 0)
+    btts_esperados = terminados * 0.25
+    if btts < btts_esperados and 1 <= restantes <= 3 and terminados > 0:
+        puntos += 2
+        motivos.append(f"🎯 <b>Deuda BTTS</b>: {btts} de {terminados} partidos con ambos equipos anotando (esperado {btts_esperados:.1f})")
+
+    # Criterio 9 — Marcador dominante de jornada: 1 pt
+    # Si 50%+ partidos terminados tienen el mismo marcador (normalizado)
+    # y el partido en vivo replica ese marcador en min 80+
+    marcador_dominante = datos_jornada.get("marcador_dominante")
+    rep_marcador       = datos_jornada.get("rep_marcador", 0)
+    if marcador_dominante and minuto >= 80 and terminados > 0:
+        marcador_vivo_norm = (max(goles_local, goles_visita), min(goles_local, goles_visita))
+        if marcador_vivo_norm == marcador_dominante and rep_marcador >= 2:
+            puntos += 1
+            motivos.append(
+                f"🔁 <b>Marcador dominante</b>: {marcador_dominante[0]}-{marcador_dominante[1]} "
+                f"se repite en {rep_marcador} partidos de la jornada — alta probabilidad de variación"
+            )
+
+    # Criterio 10 — Techo de goles (resistencia): 1-2 pts
+    # Solo ligas con 7+ partidos por jornada
+    # Nadie ha roto el techo aún (ni terminados ni en vivo)
+    techo_goles       = datos_jornada.get("techo_goles", 0)
+    partidos_en_techo = datos_jornada.get("partidos_en_techo", 0)
+    if (total >= 7 and techo_goles > 0 and minuto >= 80
+            and terminados >= total * 0.5
+            and partidos_en_techo >= 3):
+
+        goles_vivo = goles_local + goles_visita
+
+        # Verificar si algún partido en vivo ya rompió el techo (invalida criterio)
+        techo_roto_en_vivo = False
+        # (se pasa desde el loop principal via datos_jornada)
+        techo_roto_en_vivo = datos_jornada.get("techo_roto_en_vivo", False)
+
+        if not techo_roto_en_vivo and goles_vivo == techo_goles:
+            if partidos_en_techo >= 4:
+                pts_techo = 2
+            else:
+                pts_techo = 1
+            puntos += pts_techo
+            motivos.append(
+                f"🧱 <b>Resistencia de goles</b>: {partidos_en_techo} partidos tocaron el techo de "
+                f"{techo_goles} goles — alta presión para romperlo (+{pts_techo}pts)"
+            )
 
     if puntos < 2:
         return 0, None, []
@@ -392,6 +494,16 @@ def main():
         intervalo = INTERVALO_URGENTE if hay_urgente else INTERVALO_NORMAL
         if hay_urgente:
             print(f"  ⚡ Partido en min {MINUTO_URGENTE}+ — intervalo reducido a {INTERVALO_URGENTE}s")
+
+        # Detectar si algún partido en vivo ya rompió el techo de goles
+        for f in partidos_vivos:
+            lid   = f["league"]["id"]
+            ronda = f["league"]["round"]
+            techo = jornadas[lid][ronda].get("techo_goles", 0)
+            if techo > 0:
+                g_vivo = (f["goals"]["home"] or 0) + (f["goals"]["away"] or 0)
+                if g_vivo > techo:
+                    jornadas[lid][ronda]["techo_roto_en_vivo"] = True
 
         # Calcular partidos simultáneos por liga (misma hora de inicio)
         # Agrupamos por liga_id + hora_inicio redondeada a 5 minutos
