@@ -36,6 +36,8 @@ SEASON = 2025
 
 PROMEDIO_GOLES_TARDIOS = {
     "Premier League":         2.5,
+    "Championship":           2.0,
+    "Egyptian Premier League": 2.0,
     "La Liga":                2.5,
     "Serie A":                2.5,
     "Bundesliga":             2.0,
@@ -58,6 +60,8 @@ PROMEDIO_GOLES_TARDIOS = {
 
 LIGAS = {
     39:  "Premier League",
+    40:  "Championship",           # Inglaterra 2da división
+    233: "Egyptian Premier League",
     140: "La Liga",
     135: "Serie A",
     78:  "Bundesliga",
