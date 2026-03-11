@@ -88,9 +88,12 @@ alertas_enviadas = set()
 # FUNCIONES DE API-FOOTBALL
 # ============================================================
 def api_get(endpoint, params={}):
-    """Hace una llamada a API-Football y retorna el JSON."""
-    headers = {"x-apisports-key": API_KEY}
-    url = f"https://v3.api-sports.io/{endpoint}"
+    """Hace una llamada a API-Football via RapidAPI y retorna el JSON."""
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "api-football-v1.p.rapidapi.com"
+    }
+    url = f"https://api-football-v1.p.rapidapi.com/v3/{endpoint}"
     try:
         r = requests.get(url, headers=headers, params=params, timeout=10)
         data = r.json()
