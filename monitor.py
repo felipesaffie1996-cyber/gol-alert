@@ -95,7 +95,118 @@ LIGAS = {
 # ESTADO GLOBAL
 # ============================================================
 jornadas         = defaultdict(lambda: defaultdict(lambda: {"goles_89": 0, "terminados": 0, "total": 0}))
-alertas_enviadas = set()
+# Archivo para persistir alertas entre reinicios de Railway
+ALERTAS_FILE = "/tmp/alertas_enviadas.txt"
+
+# Archivo para registrar alertas del día con resultado final
+REGISTRO_FILE = "/tmp/registro_alertas.json"
+
+def cargar_registro():
+    try:
+        import json
+        with open(REGISTRO_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def guardar_registro(registro):
+    try:
+        import json
+        with open(REGISTRO_FILE, "w") as f:
+            json.dump(registro, f)
+    except Exception as e:
+        print(f"[REGISTRO ERROR] {e}")
+
+def registrar_alerta(fixture_id, liga, local, visita, minuto, marcador, nivel, puntos):
+    """Registra una alerta enviada para el informe diario."""
+    registro = cargar_registro()
+    clave = str(fixture_id)
+    if clave not in registro:
+        registro[clave] = {
+            "liga": liga,
+            "partido": f"{local} vs {visita}",
+            "minuto_alerta": minuto,
+            "marcador_alerta": marcador,
+            "nivel": nivel,
+            "puntos": puntos,
+            "gol_tardio": None,  # Se actualiza al terminar el partido
+            "resultado_final": None,
+            "fecha": datetime.now().strftime("%Y-%m-%d")
+        }
+        guardar_registro(registro)
+
+def actualizar_resultados(partidos_terminados):
+    """Actualiza el resultado final de partidos alertados que ya terminaron."""
+    registro = cargar_registro()
+    actualizado = False
+    for p in partidos_terminados:
+        fid = str(p["fixture"]["id"])
+        if fid in registro and registro[fid]["resultado_final"] is None:
+            g_h = p["goals"]["home"] or 0
+            g_a = p["goals"]["away"] or 0
+            # Verificar si hubo gol en 89+
+            eventos = obtener_eventos_partido(p["fixture"]["id"])
+            gol_tardio = False
+            for ev in eventos:
+                if ev.get("type") == "Goal" and ev.get("detail") != "Missed Penalty":
+                    min_ev = ev.get("time", {}).get("elapsed", 0) + (ev.get("time", {}).get("extra", 0) or 0)
+                    if min_ev >= 89:
+                        gol_tardio = True
+                        break
+            registro[fid]["resultado_final"] = f"{g_h}-{g_a}"
+            registro[fid]["gol_tardio"] = gol_tardio
+            actualizado = True
+    if actualizado:
+        guardar_registro(registro)
+
+def enviar_informe_diario():
+    """Envía resumen diario de alertas y su efectividad."""
+    registro = cargar_registro()
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    alertas_hoy = {k: v for k, v in registro.items() if v.get("fecha") == hoy}
+
+    if not alertas_hoy:
+        return
+
+    total      = len(alertas_hoy)
+    con_result = [v for v in alertas_hoy.values() if v["resultado_final"] is not None]
+    aciertos   = [v for v in con_result if v["gol_tardio"]]
+
+    pct = round(len(aciertos) / len(con_result) * 100) if con_result else 0
+
+    lineas = [f"📊 <b>INFORME DIARIO — {hoy}</b>\n"]
+    lineas.append(f"Total alertas: {total} | Con resultado: {len(con_result)} | Aciertos: {len(aciertos)} ({pct}%)\n")
+
+    for v in alertas_hoy.values():
+        if v["resultado_final"]:
+            icono = "✅" if v["gol_tardio"] else "❌"
+            lineas.append(f"{icono} {v['liga']} — {v['partido']}")
+            lineas.append(f"   Alerta min {v['minuto_alerta']} ({v['marcador_alerta']}) → Final: {v['resultado_final']}")
+        else:
+            lineas.append(f"⏳ {v['liga']} — {v['partido']} (sin resultado aún)")
+
+    enviar_telegram("\n".join(lineas))
+
+    # Limpiar registro de días anteriores
+    registro_limpio = {k: v for k, v in registro.items() if v.get("fecha") == hoy}
+    guardar_registro(registro_limpio)
+
+
+def cargar_alertas():
+    try:
+        with open(ALERTAS_FILE, "r") as f:
+            return set(line.strip() for line in f if line.strip())
+    except:
+        return set()
+
+def guardar_alerta(clave):
+    try:
+        with open(ALERTAS_FILE, "a") as f:
+            f.write(clave + "\n")
+    except Exception as e:
+        print(f"[ALERTA FILE ERROR] {e}")
+
+alertas_enviadas = cargar_alertas()
 cache_posiciones = {}
 
 
@@ -303,12 +414,12 @@ def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_
         puntos += 2
         motivos.append(f"⚠️ <b>Deuda jornada</b>: {goles_89} goles en 89+ en {terminados} partidos — esperado {promedio:.0f} (quedan {restantes})")
 
-    # Criterio 2 — Momentum: 1 pt (gol entre min 80-88)
-    if minuto >= 80:
-        goles_momentum = contar_goles_entre(fixture_id, 80, 88)
+    # Criterio 2 — Momentum: 1 pt (gol entre min 75-88)
+    if minuto >= 75:
+        goles_momentum = contar_goles_entre(fixture_id, 75, 88)
         if goles_momentum >= 1:
             puntos += 1
-            motivos.append(f"⚡ <b>Momentum</b>: {goles_momentum} gol(es) entre min 80-88")
+            motivos.append(f"⚡ <b>Momentum</b>: {goles_momentum} gol(es) entre min 75-88")
 
     # Criterio 3 — Over frustrado: 1 pt
     if partido_desigual and (goles_local + goles_visita) == 0 and minuto >= 85:
@@ -487,16 +598,26 @@ def main():
         partidos_vivos = obtener_partidos_en_vivo()
         print(f"  → {len(partidos_vivos)} partidos en vivo")
 
-        # Actualizar jornadas cada 10 minutos
+        # Actualizar jornadas:
+        # - Cada 10 minutos para todas las ligas en vivo
+        # - Cada ciclo para ligas con partidos en min 80+ (datos críticos)
+        rondas_vistas = set()
+        for fixture in partidos_vivos:
+            liga_id = fixture["league"]["id"]
+            ronda   = fixture["league"]["round"]
+            minuto_f = fixture["fixture"]["status"]["elapsed"] or 0
+            clave_ronda = (liga_id, ronda)
+
+            # Siempre actualizar si hay partido en min 80+
+            if minuto_f >= 80 and clave_ronda not in rondas_vistas:
+                actualizar_jornada(liga_id, ronda)
+                rondas_vistas.add(clave_ronda)
+            # Actualizar el resto cada 10 minutos
+            elif ahora - ultima_actualizacion_jornada > 600 and clave_ronda not in rondas_vistas:
+                actualizar_jornada(liga_id, ronda)
+                rondas_vistas.add(clave_ronda)
+
         if ahora - ultima_actualizacion_jornada > 600:
-            print("  → Actualizando jornadas por ronda completa...")
-            rondas_vistas = set()
-            for fixture in partidos_vivos:
-                liga_id = fixture["league"]["id"]
-                ronda   = fixture["league"]["round"]
-                if (liga_id, ronda) not in rondas_vistas:
-                    actualizar_jornada(liga_id, ronda)
-                    rondas_vistas.add((liga_id, ronda))
             ultima_actualizacion_jornada = ahora
 
         # Detectar si hay partido en minuto crítico → intervalo urgente
@@ -578,9 +699,34 @@ def main():
             )
             enviar_telegram(mensaje)
             alertas_enviadas.add(clave)
+            guardar_alerta(clave)
+            registrar_alerta(
+                fixture_id, LIGAS.get(liga_id, ""), local, visita,
+                minuto, f"{goles_local}-{goles_visita}", nivel, puntos
+            )
+
+        # Limpiar archivo si crece demasiado (más de 2000 entradas)
+        # Actualizar resultados finales de partidos alertados
+        partidos_terminados = [
+            f for f in partidos_vivos
+            if f["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]
+            and str(f["fixture"]["id"]) in cargar_registro()
+        ]
+        if partidos_terminados:
+            actualizar_resultados(partidos_terminados)
+
+        # Informe diario a las 23:59 hora Lima (UTC-5)
+        hora_lima = (datetime.utcnow().hour - 5) % 24
+        minuto_actual = datetime.utcnow().minute
+        if hora_lima == 23 and minuto_actual == 59 and ciclo % 2 == 0:
+            enviar_informe_diario()
 
         if len(alertas_enviadas) > 2000:
             alertas_enviadas.clear()
+            try:
+                open(ALERTAS_FILE, "w").close()
+            except:
+                pass
 
         time.sleep(intervalo)
 
