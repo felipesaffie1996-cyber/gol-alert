@@ -518,19 +518,23 @@ def main():
                 if g_vivo > techo:
                     jornadas[lid][ronda]["techo_roto_en_vivo"] = True
 
-        # Calcular partidos simultáneos por liga (misma hora de inicio)
-        # Agrupamos por liga_id + hora_inicio redondeada a 5 minutos
+        # Calcular partidos simultáneos por liga usando la ronda completa
+        # (no solo los partidos en vivo — incluye los ya terminados de la misma ronda)
         from collections import Counter
-        hora_por_liga = {}
-        for f in partidos_vivos:
-            lid = f["league"]["id"]
-            hora = f["fixture"].get("date", "")[:16]  # "2026-03-11T16:45"
-            hora_por_liga.setdefault(lid, []).append(hora)
-
         simultaneos_por_liga = {}
-        for lid, horas in hora_por_liga.items():
-            conteo = Counter(horas)
-            simultaneos_por_liga[lid] = max(conteo.values())
+        for f in partidos_vivos:
+            lid   = f["league"]["id"]
+            ronda = f["league"]["round"]
+            if lid in simultaneos_por_liga:
+                continue
+            # Usar todos los partidos de la ronda (terminados + en vivo)
+            todos = obtener_partidos_ronda(lid, ronda)
+            horas = [p["fixture"].get("date", "")[:16] for p in todos]
+            if horas:
+                conteo = Counter(horas)
+                simultaneos_por_liga[lid] = max(conteo.values())
+            else:
+                simultaneos_por_liga[lid] = 1
 
         # Evaluar cada partido desde min 80
         for fixture in partidos_vivos:
@@ -559,8 +563,8 @@ def main():
             if nivel is None:
                 continue
 
-            # Re-alerta si sube de nivel (clave incluye puntos)
-            clave = f"{fixture_id}_{puntos}_{minuto // 5}"
+            # Una alerta por partido por nivel — solo re-alerta si SUBE de nivel
+            clave = f"{fixture_id}_{nivel}"
             if clave in alertas_enviadas:
                 continue
 
