@@ -23,8 +23,135 @@ NIVELES DE ALERTA (mínimo 2 puntos para alertar):
 
 import requests
 import time
+import json
+import base64
 from datetime import datetime
 from collections import defaultdict
+
+# ============================================================
+# GOOGLE SHEETS — Base de datos persistente de alertas
+# ============================================================
+SHEET_ID = "1FWWX7eMEExqUnBY7tHcHVB83rii2DKTSuVogvDnK458"
+
+import os
+_creds_raw = os.environ.get("GOOGLE_CREDS_JSON", "{}")
+try:
+    GOOGLE_CREDS = json.loads(_creds_raw)
+except Exception as e:
+    print(f"[SHEETS] Error leyendo GOOGLE_CREDS_JSON: {e}")
+    GOOGLE_CREDS = {}
+
+_sheets_token = None
+_sheets_token_expiry = 0
+
+def get_sheets_token():
+    """Obtiene token OAuth2 para Google Sheets usando JWT."""
+    global _sheets_token, _sheets_token_expiry
+    ahora = time.time()
+    if _sheets_token and ahora < _sheets_token_expiry - 60:
+        return _sheets_token
+    try:
+        import urllib.request, urllib.parse
+        import hmac, hashlib
+        from base64 import urlsafe_b64encode
+
+        def b64(data):
+            if isinstance(data, str):
+                data = data.encode()
+            return urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        header  = b64(json.dumps({"alg": "RS256", "typ": "JWT"}))
+        now_int = int(ahora)
+        payload = b64(json.dumps({
+            "iss":   GOOGLE_CREDS["client_email"],
+            "scope": "https://www.googleapis.com/auth/spreadsheets",
+            "aud":   "https://oauth2.googleapis.com/token",
+            "exp":   now_int + 3600,
+            "iat":   now_int
+        }))
+
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.backends import default_backend
+
+        private_key = serialization.load_pem_private_key(
+            GOOGLE_CREDS["private_key"].encode(),
+            password=None,
+            backend=default_backend()
+        )
+        sig_input = f"{header}.{payload}".encode()
+        signature = private_key.sign(sig_input, padding.PKCS1v15(), hashes.SHA256())
+        jwt_token = f"{header}.{payload}.{b64(signature)}"
+
+        data = urllib.parse.urlencode({
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": jwt_token
+        }).encode()
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+            _sheets_token = result["access_token"]
+            _sheets_token_expiry = ahora + result.get("expires_in", 3600)
+            return _sheets_token
+    except Exception as e:
+        print(f"[SHEETS TOKEN ERROR] {e}")
+        return None
+
+def sheets_append(fila):
+    """Agrega una fila al Google Sheet."""
+    try:
+        token = get_sheets_token()
+        if not token:
+            return
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/Sheet1!A:K:append?valueInputOption=RAW"
+        payload = json.dumps({"values": [fila]}).encode()
+        req = __import__("urllib.request", fromlist=["Request"]).Request(
+            url, data=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+        )
+        with __import__("urllib.request", fromlist=["urlopen"]).urlopen(req) as resp:
+            print(f"[SHEETS OK] Fila agregada")
+    except Exception as e:
+        print(f"[SHEETS ERROR] {e}")
+
+def sheets_update_resultado(fixture_id, resultado_final, gol_89):
+    """Busca la fila del partido y actualiza resultado y acierto."""
+    try:
+        token = get_sheets_token()
+        if not token:
+            return
+        import urllib.request
+        # Leer todas las filas
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/Sheet1!A:L"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        rows = data.get("values", [])
+        # Buscar fila con fixture_id (columna L si la guardamos, o buscar por partido)
+        for i, row in enumerate(rows[1:], start=2):  # skip header
+            # fixture_id está en columna L (índice 11)
+            if len(row) > 11 and str(fixture_id) == str(row[11]):
+                acertado = "SI" if gol_89 else "NO"
+                range_upd = f"Sheet1!I{i}:K{i}"
+                url2 = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{range_upd}?valueInputOption=RAW"
+                payload = json.dumps({"values": [[resultado_final, "SI" if gol_89 else "NO", acertado]]}).encode()
+                req2 = urllib.request.Request(
+                    url2, data=payload,
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    method="PUT"
+                )
+                with urllib.request.urlopen(req2) as resp2:
+                    print(f"[SHEETS OK] Resultado actualizado: {resultado_final} gol89={gol_89}")
+                break
+    except Exception as e:
+        print(f"[SHEETS UPDATE ERROR] {e}")
 
 # ============================================================
 # CONFIGURACIÓN
@@ -117,8 +244,8 @@ def guardar_registro(registro):
     except Exception as e:
         print(f"[REGISTRO ERROR] {e}")
 
-def registrar_alerta(fixture_id, liga, local, visita, minuto, marcador, nivel, puntos):
-    """Registra una alerta enviada para el informe diario."""
+def registrar_alerta(fixture_id, liga, local, visita, minuto, marcador, nivel, puntos, criterios):
+    """Registra una alerta en memoria Y en Google Sheets."""
     registro = cargar_registro()
     clave = str(fixture_id)
     if clave not in registro:
@@ -129,11 +256,28 @@ def registrar_alerta(fixture_id, liga, local, visita, minuto, marcador, nivel, p
             "marcador_alerta": marcador,
             "nivel": nivel,
             "puntos": puntos,
-            "gol_tardio": None,  # Se actualiza al terminar el partido
+            "gol_tardio": None,
             "resultado_final": None,
-            "fecha": datetime.now().strftime("%Y-%m-%d")
+            "fecha": datetime.now().strftime("%Y-%m-%d"),
+            "fila_sheet": None  # Se guarda para actualizar después
         }
         guardar_registro(registro)
+        # Escribir fila en Google Sheets
+        fila = [
+            datetime.now().strftime("%Y-%m-%d %H:%M"),  # A: fecha
+            liga,                                         # B: liga
+            f"{local} vs {visita}",                       # C: partido
+            minuto,                                       # D: minuto_alerta
+            marcador,                                     # E: marcador_alerta
+            nivel,                                        # F: nivel
+            puntos,                                       # G: puntos
+            criterios,                                    # H: criterios
+            "",                                           # I: resultado_final
+            "",                                           # J: gol_89
+            "",                                           # K: acertado
+            str(fixture_id)                               # L: fixture_id (oculto, para update)
+        ]
+        sheets_append(fila)
 
 def actualizar_resultados(partidos_terminados):
     """Actualiza el resultado final de partidos alertados que ya terminaron."""
@@ -153,9 +297,11 @@ def actualizar_resultados(partidos_terminados):
                     if min_ev >= 89:
                         gol_tardio = True
                         break
-            registro[fid]["resultado_final"] = f"{g_h}-{g_a}"
+            resultado_str = f"{g_h}-{g_a}"
+            registro[fid]["resultado_final"] = resultado_str
             registro[fid]["gol_tardio"] = gol_tardio
             actualizado = True
+            sheets_update_resultado(int(fid), resultado_str, gol_tardio)
     if actualizado:
         guardar_registro(registro)
 
@@ -700,9 +846,10 @@ def main():
             enviar_telegram(mensaje)
             alertas_enviadas.add(clave)
             guardar_alerta(clave)
+            criterios_txt = " | ".join([m.replace("<b>","").replace("</b>","") for m in motivos])
             registrar_alerta(
                 fixture_id, LIGAS.get(liga_id, ""), local, visita,
-                minuto, f"{goles_local}-{goles_visita}", nivel, puntos
+                minuto, f"{goles_local}-{goles_visita}", nivel, puntos, criterios_txt
             )
 
         # Limpiar archivo si crece demasiado (más de 2000 entradas)
