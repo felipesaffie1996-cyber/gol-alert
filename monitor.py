@@ -188,6 +188,7 @@ PROMEDIO_GOLES_TARDIOS = {
     "Saudi Pro League":       2,
     "Israeli Premier League": 2,
     "Egyptian Premier League": 1,
+    "Süper Lig":              2,
     "DEFAULT":                2,
 }
 
@@ -213,6 +214,7 @@ LIGAS = {
     106: "Ekstraklasa",
     307: "Saudi Pro League",
     384: "Israeli Premier League",
+    203: "Süper Lig",              # Turquía
 }
 
 # ============================================================
