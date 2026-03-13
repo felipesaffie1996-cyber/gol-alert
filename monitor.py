@@ -168,27 +168,27 @@ MINUTO_URGENTE    = 84
 SEASON = 2025
 
 PROMEDIO_GOLES_TARDIOS = {
-    "Premier League":         2.5,
-    "Championship":           2.0,
-    "Egyptian Premier League": 2.0,
-    "La Liga":                2.5,
-    "Serie A":                2.5,
-    "Bundesliga":             2.0,
-    "Ligue 1":                2.0,
-    "Eredivisie":             2.5,
-    "Primeira Liga":          2.0,
-    "Super League":           2.0,
-    "Pro League":             2.0,
-    "Superliga":              2.0,
-    "Eliteserien":            2.0,
-    "Primera División":       2.0,
-    "Liga 1":                 2.0,
-    "Liga MX":                2.5,
-    "Série A":                2.5,
-    "Ekstraklasa":            2.0,
-    "Saudi Pro League":       2.5,
-    "Israeli Premier League": 2.0,
-    "DEFAULT":                2.0,
+    "Premier League":         3,
+    "Championship":           2,
+    "La Liga":                3,
+    "Serie A":                2,
+    "Bundesliga":             3,
+    "Ligue 1":                2,
+    "Eredivisie":             2,
+    "Primeira Liga":          2,
+    "Super League":           1,
+    "Pro League":             1,
+    "Superliga":              1,
+    "Eliteserien":            1,
+    "Primera División":       2,
+    "Liga 1":                 2,
+    "Liga MX":                2,
+    "Série A":                2,
+    "Ekstraklasa":            2,
+    "Saudi Pro League":       2,
+    "Israeli Premier League": 2,
+    "Egyptian Premier League": 1,
+    "DEFAULT":                2,
 }
 
 LIGAS = {
@@ -561,11 +561,14 @@ def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_
     puntos  = 0
     motivos = []
 
-    # Criterio 1 — Deuda de jornada: 2 pts (solo últimos 1-3 partidos de la ronda)
+    # Criterio 1 — Deuda de jornada: escala de urgencia
+    # Activa cuando los partidos restantes <= deuda (cada partido restante "debe" un gol)
+    # Así funciona proporcionalmente para cualquier liga y cualquier promedio
     deuda = promedio - goles_89
-    if deuda >= promedio and 1 <= restantes <= 3 and terminados > 0:
-        puntos += 2
-        motivos.append(f"⚠️ <b>Deuda jornada</b>: {goles_89} goles en 89+ en {terminados} partidos — esperado {promedio:.0f} (quedan {restantes})")
+    if deuda >= 1 and restantes >= 1 and restantes <= deuda and terminados > 0:
+        pts_deuda = min(int(deuda), int(promedio))
+        puntos += pts_deuda
+        motivos.append(f"⚠️ <b>Deuda jornada</b>: {goles_89} goles en 89+ de {terminados} partidos — faltan {int(deuda)} para promedio ({promedio:.0f}) — quedan {restantes}/{total} [{pts_deuda} pts]")
 
     # Criterio 2 — Momentum: 1 pt (gol entre min 75-88)
     if minuto >= 75:
@@ -744,6 +747,10 @@ def main():
         f"Monitoreando {len(LIGAS)} ligas en tiempo real\n"
         f"⏱ {INTERVALO_NORMAL}s normal / {INTERVALO_URGENTE}s en min {MINUTO_URGENTE}+"
     )
+
+    # Cargar alertas previas desde Sheets para no duplicar tras reinicios
+    global alertas_enviadas
+    alertas_enviadas = cargar_alertas_sheets()
 
     ciclo = 0
     ultima_actualizacion_jornada = 0
