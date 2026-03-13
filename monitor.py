@@ -345,12 +345,50 @@ def cargar_alertas():
     except:
         return set()
 
+def cargar_alertas_sheets():
+    """Carga alertas enviadas desde Google Sheets — sobrevive reinicios de Railway."""
+    try:
+        token = get_sheets_token()
+        if not token:
+            return cargar_alertas()
+        import urllib.request
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/alertas!A:A"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        claves = set()
+        for row in data.get("values", []):
+            if row:
+                claves.add(row[0])
+        print(f"[SHEETS] {len(claves)} alertas previas cargadas")
+        return claves
+    except Exception as e:
+        print(f"[SHEETS] No se pudo cargar alertas, usando archivo local: {e}")
+        return cargar_alertas()
+
 def guardar_alerta(clave):
+    # Guardar en archivo local
     try:
         with open(ALERTAS_FILE, "a") as f:
             f.write(clave + "\n")
     except Exception as e:
         print(f"[ALERTA FILE ERROR] {e}")
+    # Guardar en Google Sheets (pestaña alertas)
+    try:
+        token = get_sheets_token()
+        if not token:
+            return
+        import urllib.request
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/alertas!A1:append?valueInputOption=RAW"
+        payload = json.dumps({"values": [[clave]]}).encode()
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req) as resp:
+            pass
+    except Exception as e:
+        print(f"[SHEETS ALERTA ERROR] {e}")
 
 alertas_enviadas = cargar_alertas()
 cache_posiciones = {}
