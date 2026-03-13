@@ -158,8 +158,8 @@ def sheets_update_resultado(fixture_id, resultado_final, gol_89):
 # ============================================================
 API_KEY          = "7aa252fd9c63236a40e473bb6d518319"  # api-sports.io (PRO, 7500 req/día)
 RAPIDAPI_KEY     = "caedee4c5dmshd0541b53eb081a0p1ad27djsn100a066c5efa"  # RapidAPI (backup)
-TELEGRAM_TOKEN   = "8760870045:AAHXGZJGXHTsuLukgWYnVv34bLDZd21RZA4"
-TELEGRAM_CHAT_ID = "1491964944"
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "8760870045:AAHXGZJGXHTsuLukgWYnVv34bLDZd21RZA4")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1491964944")
 
 INTERVALO_NORMAL  = 60   # segundos normalmente
 INTERVALO_URGENTE = 30   # segundos cuando hay partido en min 84+
