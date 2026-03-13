@@ -107,7 +107,7 @@ def sheets_append(fila):
         token = get_sheets_token()
         if not token:
             return
-        url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/Sheet1!A:K:append?valueInputOption=RAW"
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/Sheet1!A1:append?valueInputOption=RAW"
         payload = json.dumps({"values": [fila]}).encode()
         req = __import__("urllib.request", fromlist=["Request"]).Request(
             url, data=payload,
@@ -464,11 +464,14 @@ def actualizar_jornada(liga_id, ronda):
     goles_89   = 0
     btts       = 0
 
+    detalle_goles_89 = []  # lista de strings "Local X-Y Visita (min Z')"
     for p in partidos:
         if p["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
             terminados += 1
             goles_local  = p["goals"]["home"] or 0
             goles_visita = p["goals"]["away"] or 0
+            nombre_local  = p["teams"]["home"]["name"]
+            nombre_visita = p["teams"]["away"]["name"]
             if goles_local >= 1 and goles_visita >= 1:
                 btts += 1
             for ev in obtener_eventos_partido(p["fixture"]["id"]):
@@ -476,6 +479,9 @@ def actualizar_jornada(liga_id, ronda):
                     min_ev = ev.get("time", {}).get("elapsed", 0) + (ev.get("time", {}).get("extra", 0) or 0)
                     if min_ev >= 89:
                         goles_89 += 1
+                        extra = ev.get("time", {}).get("extra", 0) or 0
+                        min_txt = f"90'+{extra}" if extra else f"{min_ev}'"
+                        detalle_goles_89.append(f"{nombre_local} {goles_local}-{goles_visita} {nombre_visita} ({min_txt})")
 
     # Criterio 9 — Marcador dominante (normalizado: siempre mayor-menor)
     from collections import Counter
@@ -493,8 +499,8 @@ def actualizar_jornada(liga_id, ronda):
         if count > max_repeticiones:
             max_repeticiones = count
             marcador_dominante = marcador
-    # Solo es dominante si supera el 50% de partidos terminados
-    if marcador_dominante and max_repeticiones / max(terminados, 1) <= 0.5:
+    # Solo es dominante si supera el 40% de partidos terminados
+    if marcador_dominante and max_repeticiones / max(terminados, 1) < 0.4:
         marcador_dominante = None
         max_repeticiones = 0
 
@@ -515,6 +521,7 @@ def actualizar_jornada(liga_id, ronda):
 
     jornadas[liga_id][ronda] = {
         "goles_89":           goles_89,
+        "detalle_goles_89":   detalle_goles_89,
         "terminados":         terminados,
         "total":              total,
         "btts":               btts,
@@ -704,13 +711,18 @@ def construir_mensaje(fixture, liga_id, puntos, nivel, motivos, datos_jornada, p
 
     motivos_txt = "\n".join(f"• {m}" for m in motivos)
 
+    detalle_89 = datos_jornada.get("detalle_goles_89", [])
+    detalle_89_txt = ""
+    if detalle_89:
+        detalle_89_txt = "\n" + "\n".join(f"  🕐 {d}" for d in detalle_89)
+
     return f"""{icono} <b>ALERTA {nivel} [{puntos} pts] — {liga_nombre}</b>
 ⚽ <b>{local} {goles_local}-{goles_visita} {visita}</b>
 ⏱ Minuto: <b>{minuto}'</b>{pos_txt}
 
 <b>📊 {ronda} — Goles en 89+:</b>
 • Terminados: {terminados} de {total} | Tardíos: <b>{goles_89}</b>
-• Promedio esperado: {promedio:.0f} por jornada
+• Promedio esperado: {promedio:.0f} por jornada{detalle_89_txt}
 
 <b>🎯 Criterios activos:</b>
 {motivos_txt}
@@ -735,6 +747,7 @@ def main():
 
     ciclo = 0
     ultima_actualizacion_jornada = 0
+    ultimo_informe_dia = ""
 
     while True:
         ciclo += 1
@@ -834,6 +847,9 @@ def main():
             clave = f"{fixture_id}_{nivel}"
             if clave in alertas_enviadas:
                 continue
+            # Marcar ANTES de enviar para evitar doble envío en ciclos rápidos
+            alertas_enviadas.add(clave)
+            guardar_alerta(clave)
 
             local  = fixture["teams"]["home"]["name"]
             visita = fixture["teams"]["away"]["name"]
@@ -844,29 +860,31 @@ def main():
                 datos_jornada, pos_local, pos_visita
             )
             enviar_telegram(mensaje)
-            alertas_enviadas.add(clave)
-            guardar_alerta(clave)
             criterios_txt = " | ".join([m.replace("<b>","").replace("</b>","") for m in motivos])
             registrar_alerta(
                 fixture_id, LIGAS.get(liga_id, ""), local, visita,
                 minuto, f"{goles_local}-{goles_visita}", nivel, puntos, criterios_txt
             )
 
-        # Limpiar archivo si crece demasiado (más de 2000 entradas)
-        # Actualizar resultados finales de partidos alertados
-        partidos_terminados = [
-            f for f in partidos_vivos
-            if f["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]
-            and str(f["fixture"]["id"]) in cargar_registro()
-        ]
-        if partidos_terminados:
-            actualizar_resultados(partidos_terminados)
+        # Actualizar resultados de partidos alertados que aún no tienen resultado
+        # Consulta directamente por fixture_id — no depende de partidos_vivos
+        registro_actual = cargar_registro()
+        pendientes = [fid for fid, v in registro_actual.items() if v["resultado_final"] is None]
+        if pendientes:
+            for fid in pendientes:
+                datos_fixture = api_get("fixtures", {"id": fid})
+                if datos_fixture:
+                    p = datos_fixture[0]
+                    if p["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
+                        actualizar_resultados([p])
 
-        # Informe diario a las 23:59 hora Lima (UTC-5)
+        # Informe diario a las 23:59 hora Lima (UTC-5) — solo una vez por día
         hora_lima = (datetime.utcnow().hour - 5) % 24
         minuto_actual = datetime.utcnow().minute
-        if hora_lima == 23 and minuto_actual == 59 and ciclo % 2 == 0:
+        hoy_str = datetime.utcnow().strftime("%Y-%m-%d")
+        if hora_lima == 23 and minuto_actual == 59 and ultimo_informe_dia != hoy_str:
             enviar_informe_diario()
+            ultimo_informe_dia = hoy_str
 
         if len(alertas_enviadas) > 2000:
             alertas_enviadas.clear()
