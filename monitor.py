@@ -189,6 +189,9 @@ PROMEDIO_GOLES_TARDIOS = {
     "Israeli Premier League": 2,
     "Egyptian Premier League": 1,
     "Süper Lig":              2,
+    "J1 League":              2,
+    "Chinese Super League":   2,
+    "K League 1":             2,
     "DEFAULT":                2,
 }
 
@@ -215,6 +218,9 @@ LIGAS = {
     307: "Saudi Pro League",
     384: "Israeli Premier League",
     203: "Süper Lig",              # Turquía
+    98:  "J1 League",              # Japón
+    169: "Chinese Super League",   # China
+    292: "K League 1",             # Corea del Sur
 }
 
 # ============================================================
