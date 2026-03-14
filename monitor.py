@@ -401,6 +401,19 @@ def guardar_alerta(clave):
 alertas_enviadas = cargar_alertas()
 cache_posiciones = {}
 
+# ============================================================
+# CACHÉ AGRESIVO — reduce requests a la API en ~80%
+# ============================================================
+_cache_eventos     = {}  # fixture_id -> (timestamp, eventos)
+_cache_stats       = {}  # fixture_id -> (timestamp, stats)
+_cache_ronda       = {}  # (liga_id, ronda) -> (timestamp, partidos)
+_cache_simultaneos = {}  # liga_id -> (timestamp, simultaneos)
+
+CACHE_EVENTOS_TTL      = 55   # segundos
+CACHE_STATS_TTL        = 55   # segundos
+CACHE_RONDA_TTL        = 300  # 5 minutos
+CACHE_SIMULTANEOS_TTL  = 600  # 10 minutos
+
 
 
 
@@ -440,17 +453,36 @@ def obtener_partidos_en_vivo():
 
 
 def obtener_partidos_ronda(liga_id, ronda):
-    return api_get("fixtures", {"league": liga_id, "season": SEASON, "round": ronda})
+    clave = (liga_id, ronda)
+    ahora = time.time()
+    if clave in _cache_ronda:
+        ts, data = _cache_ronda[clave]
+        if ahora - ts < CACHE_RONDA_TTL:
+            return data
+    data = api_get("fixtures", {"league": liga_id, "season": SEASON, "round": ronda})
+    _cache_ronda[clave] = (ahora, data)
+    return data
 
 
-def obtener_eventos_partido(fixture_id):
-    """Obtiene los eventos (goles) de un partido — siempre frescos, sin cache."""
-    return api_get("fixtures/events", {"fixture": fixture_id})
+def obtener_eventos_partido(fixture_id, forzar=False):
+    """Obtiene los eventos (goles) de un partido — con cache de 55s."""
+    ahora = time.time()
+    if not forzar and fixture_id in _cache_eventos:
+        ts, data = _cache_eventos[fixture_id]
+        if ahora - ts < CACHE_EVENTOS_TTL:
+            return data
+    data = api_get("fixtures/events", {"fixture": fixture_id})
+    _cache_eventos[fixture_id] = (ahora, data)
+    return data
 
 
 def obtener_estadisticas_partido(fixture_id):
-    """Obtiene estadísticas en vivo de un partido (posesión, tiros, córners).
-    La API devuelve siempre [local, visita] en ese orden."""
+    """Obtiene estadísticas en vivo de un partido — con cache de 55s."""
+    ahora = time.time()
+    if fixture_id in _cache_stats:
+        ts, data = _cache_stats[fixture_id]
+        if ahora - ts < CACHE_STATS_TTL:
+            return data
     response = api_get("fixtures/statistics", {"fixture": fixture_id})
     stats = {}
     lados = ["home", "away"]
@@ -460,6 +492,7 @@ def obtener_estadisticas_partido(fixture_id):
         for stat in equipo.get("statistics", []):
             datos[stat["type"]] = stat["value"]
         stats[lado] = datos
+    _cache_stats[fixture_id] = (time.time(), stats)
     return stats
 
 
@@ -851,8 +884,7 @@ def main():
                 if g_vivo > techo:
                     jornadas[lid][ronda]["techo_roto_en_vivo"] = True
 
-        # Calcular partidos simultáneos por liga usando la ronda completa
-        # (no solo los partidos en vivo — incluye los ya terminados de la misma ronda)
+        # Calcular partidos simultáneos por liga — con cache de 10 min
         from collections import Counter
         simultaneos_por_liga = {}
         for f in partidos_vivos:
@@ -860,14 +892,21 @@ def main():
             ronda = f["league"]["round"]
             if lid in simultaneos_por_liga:
                 continue
-            # Usar todos los partidos de la ronda (terminados + en vivo)
+            ahora_sim = time.time()
+            if lid in _cache_simultaneos:
+                ts_sim, val_sim = _cache_simultaneos[lid]
+                if ahora_sim - ts_sim < CACHE_SIMULTANEOS_TTL:
+                    simultaneos_por_liga[lid] = val_sim
+                    continue
             todos = obtener_partidos_ronda(lid, ronda)
             horas = [p["fixture"].get("date", "")[:16] for p in todos]
             if horas:
                 conteo = Counter(horas)
-                simultaneos_por_liga[lid] = max(conteo.values())
+                val = max(conteo.values())
             else:
-                simultaneos_por_liga[lid] = 1
+                val = 1
+            simultaneos_por_liga[lid] = val
+            _cache_simultaneos[lid] = (ahora_sim, val)
 
         # Evaluar cada partido desde min 80
         for fixture in partidos_vivos:
@@ -919,17 +958,17 @@ def main():
                 minuto, f"{goles_local}-{goles_visita}", nivel, puntos, criterios_txt
             )
 
-        # Actualizar resultados de partidos alertados que aún no tienen resultado
-        # Consulta directamente por fixture_id — no depende de partidos_vivos
-        registro_actual = cargar_registro()
-        pendientes = [fid for fid, v in registro_actual.items() if v["resultado_final"] is None]
-        if pendientes:
-            for fid in pendientes:
-                datos_fixture = api_get("fixtures", {"id": fid})
-                if datos_fixture:
-                    p = datos_fixture[0]
-                    if p["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
-                        actualizar_resultados([p])
+        # Actualizar resultados — solo cada 5 minutos para ahorrar requests
+        if ciclo % 5 == 0:
+            registro_actual = cargar_registro()
+            pendientes = [fid for fid, v in registro_actual.items() if v["resultado_final"] is None]
+            if pendientes:
+                for fid in pendientes:
+                    datos_fixture = api_get("fixtures", {"id": fid})
+                    if datos_fixture:
+                        p = datos_fixture[0]
+                        if p["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
+                            actualizar_resultados([p])
 
         # Informe diario a las 23:59 hora Lima (UTC-5) — solo una vez por día
         hora_lima = (datetime.utcnow().hour - 5) % 24
@@ -945,6 +984,14 @@ def main():
                 open(ALERTAS_FILE, "w").close()
             except:
                 pass
+
+        # Limpiar caches viejos cada 100 ciclos para liberar memoria
+        if ciclo % 100 == 0:
+            ahora_clean = time.time()
+            _cache_eventos    = {k: v for k, v in _cache_eventos.items()    if ahora_clean - v[0] < 300}
+            _cache_stats      = {k: v for k, v in _cache_stats.items()      if ahora_clean - v[0] < 300}
+            _cache_ronda      = {k: v for k, v in _cache_ronda.items()      if ahora_clean - v[0] < 600}
+            _cache_simultaneos = {k: v for k, v in _cache_simultaneos.items() if ahora_clean - v[0] < 1200}
 
         time.sleep(intervalo)
 
