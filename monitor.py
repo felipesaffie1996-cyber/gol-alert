@@ -661,12 +661,12 @@ def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_
         puntos += 1
         motivos.append(f"💥 <b>Over frustrado</b>: dif. {diferencia_pos} puestos y 0-0 al min {minuto}")
 
-    # Criterio 4 — Partido despertó: 1 pt (gol entre min 65-85, cualquier partido)
+    # Criterio 4 — Partido despertó: 1 pt (2+ goles entre min 65-86 — partido encendido)
     if minuto >= 80:
-        goles_65_85 = contar_goles_entre(fixture_id, 65, 85)
-        if goles_65_85 >= 1:
+        goles_65_86 = contar_goles_entre(fixture_id, 65, 86)
+        if goles_65_86 >= 2:
             puntos += 1
-            motivos.append(f"🔄 <b>Partido despertó</b>: {goles_65_85} gol(es) entre min 65-85")
+            motivos.append(f"🔄 <b>Partido despertó</b>: {goles_65_86} goles entre min 65-86")
 
     # Criterio 7 — Partidos simultáneos en la misma liga: 1 pt
     # Cuando 2+ partidos empezaron a la misma hora, hay presión extra por resultados paralelos
