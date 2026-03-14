@@ -816,6 +816,7 @@ def construir_mensaje(fixture, liga_id, puntos, nivel, motivos, datos_jornada, p
 # LOOP PRINCIPAL
 # ============================================================
 def main():
+    global _cache_eventos, _cache_stats, _cache_ronda, _cache_simultaneos
     print("=" * 60)
     print("⚽ GOL ALERT SYSTEM — Iniciando...")
     print(f"🏆 Ligas: {len(LIGAS)} | Normal: {INTERVALO_NORMAL}s | Urgente (min {MINUTO_URGENTE}+): {INTERVALO_URGENTE}s")
