@@ -755,15 +755,13 @@ def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_
                 f"{techo_goles} goles — alta presión para romperlo (+{pts_techo}pts)"
             )
 
-    if puntos < 2:
+    if puntos < 3:
         return 0, None, []
 
     if puntos >= 4:
         nivel = "TOTAL"
-    elif puntos == 3:
-        nivel = "MÁXIMA"
     else:
-        nivel = "ALERT"
+        nivel = "MÁXIMA"
 
     return puntos, nivel, motivos
 
