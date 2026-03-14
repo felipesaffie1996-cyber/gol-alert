@@ -7,7 +7,7 @@ SISTEMA DE PUNTOS:
   Criterio 1  — Deuda goles tardíos (últimos 1-3 partidos sin gol en 89+):  2 pts
   Criterio 2  — Momentum (gol entre min 80-88):                             1 pt
   Criterio 3  — Over frustrado (top vs colista, 0-0 al 85+):                1 pt
-  Criterio 4  — Partido parejo despertó (gol entre min 60-80):              1 pt
+  Criterio 4  — Partido despertó (gol entre min 65-85, cualquier partido):  1 pt
   Criterio 5  — Local perdiendo al min 80+:                                 1 pt
   Criterio 6  — Dominio estadístico (tiros 6+, posesión 60%+ o córners 6+): 1 pt
   Criterio 7  — Jornada simultánea (2+ partidos a la misma hora):           1 pt
@@ -159,7 +159,7 @@ def sheets_update_resultado(fixture_id, resultado_final, gol_89):
 API_KEY          = "7aa252fd9c63236a40e473bb6d518319"  # api-sports.io (PRO, 7500 req/día)
 RAPIDAPI_KEY     = "caedee4c5dmshd0541b53eb081a0p1ad27djsn100a066c5efa"  # RapidAPI (backup)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "8760870045:AAHXGZJGXHTsuLukgWYnVv34bLDZd21RZA4")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1491964944")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-5100869828")
 
 INTERVALO_NORMAL  = 60   # segundos normalmente
 INTERVALO_URGENTE = 30   # segundos cuando hay partido en min 84+
@@ -189,8 +189,8 @@ PROMEDIO_GOLES_TARDIOS = {
     "Israeli Premier League": 2,
     "Egyptian Premier League": 1,
     "Süper Lig":              2,
+    "Thai League 1":          2,
     "J1 League":              2,
-    "Chinese Super League":   2,
     "K League 1":             2,
     "DEFAULT":                2,
 }
@@ -217,10 +217,10 @@ LIGAS = {
     106: "Ekstraklasa",
     307: "Saudi Pro League",
     384: "Israeli Premier League",
-    203: "Süper Lig",              # Turquía
-    98:  "J1 League",              # Japón
-    169: "Chinese Super League",   # China
-    292: "K League 1",             # Corea del Sur
+    203: "Süper Lig",
+    290: "Thai League 1",
+    98:  "J1 League",
+    292: "K League 1",
 }
 
 # ============================================================
@@ -628,12 +628,12 @@ def calcular_alerta(fixture_id, liga_id, minuto, goles_local, goles_visita, pos_
         puntos += 1
         motivos.append(f"💥 <b>Over frustrado</b>: dif. {diferencia_pos} puestos y 0-0 al min {minuto}")
 
-    # Criterio 4 — Partido parejo despertó: 1 pt
-    if partido_parejo and minuto >= 80:
-        goles_60_80 = contar_goles_entre(fixture_id, 60, 80)
-        if goles_60_80 >= 1:
+    # Criterio 4 — Partido despertó: 1 pt (gol entre min 65-85, cualquier partido)
+    if minuto >= 80:
+        goles_65_85 = contar_goles_entre(fixture_id, 65, 85)
+        if goles_65_85 >= 1:
             puntos += 1
-            motivos.append(f"🔄 <b>Partido parejo despertó</b>: dif. {diferencia_pos} puestos, gol entre min 60-80")
+            motivos.append(f"🔄 <b>Partido despertó</b>: {goles_65_85} gol(es) entre min 65-85")
 
     # Criterio 7 — Partidos simultáneos en la misma liga: 1 pt
     # Cuando 2+ partidos empezaron a la misma hora, hay presión extra por resultados paralelos
